@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js';
+import { CurrencyMismatchError, InvalidMoneyError } from '../errors/domain.error';
 
 export interface MoneyProps {
   amount: string;
@@ -7,57 +8,74 @@ export interface MoneyProps {
 
 const NOT_IMPLEMENTED = 'not implemented';
 
+const AMOUNT_PATTERN = /^\d+(\.\d{1,2})?$/;
+
 export class Money {
   private constructor(
     private readonly value: Decimal,
     public readonly currency: string,
-  ) {}
+  ) { }
 
-  static from(_props: MoneyProps): Money {
-    throw new Error(NOT_IMPLEMENTED);
+  static from(props: MoneyProps): Money {
+    if (!props.currency) {
+      throw new InvalidMoneyError('currency is required')
+    }
+    if (!AMOUNT_PATTERN.test(props.amount)) {
+      throw new InvalidMoneyError(`invalid amount: ${props.amount}`)
+    }
+    return new Money(new Decimal(props.amount), props.currency)
   }
 
-  static zero(_currency: string): Money {
-    throw new Error(NOT_IMPLEMENTED);
+  static zero(currency: string): Money {
+    return Money.from({ amount: '0.00', currency });
   }
 
-  add(_other: Money): Money {
-    throw new Error(NOT_IMPLEMENTED);
+  add(other: Money): Money {
+    this.assertSameCurrency(other);
+    return new Money(this.value.plus(other.value), this.currency);
   }
 
-  subtract(_other: Money): Money {
-    throw new Error(NOT_IMPLEMENTED);
+  subtract(other: Money): Money {
+    this.assertSameCurrency(other);
+    return new Money(this.value.minus(other.value), this.currency);
   }
 
   negate(): Money {
-    throw new Error(NOT_IMPLEMENTED);
+    return new Money(this.value.negated(), this.currency);
   }
 
   isZero(): boolean {
-    throw new Error(NOT_IMPLEMENTED);
+    return this.value.isZero();
   }
 
   isPositive(): boolean {
-    throw new Error(NOT_IMPLEMENTED);
+    return this.value.greaterThan(0);
   }
 
   isNegative(): boolean {
-    throw new Error(NOT_IMPLEMENTED);
+    return this.value.lessThan(0);
   }
 
-  isLessThan(_other: Money): boolean {
-    throw new Error(NOT_IMPLEMENTED);
+  isLessThan(other: Money): boolean {
+    this.assertSameCurrency(other);
+    return this.value.lessThan(other.value);
   }
 
-  equals(_other: Money): boolean {
-    throw new Error(NOT_IMPLEMENTED);
+  equals(other: Money): boolean {
+    return this.currency === other.currency && this.value.equals(other.value);
   }
 
   toJSON(): MoneyProps {
-    throw new Error(NOT_IMPLEMENTED);
+    return { amount: this.toString(), currency: this.currency };
+  }
+
+  private assertSameCurrency(other: Money): void {
+    if (this.currency !== other.currency) {
+      throw new CurrencyMismatchError(`cannot combine ${this.currency} with ${other.currency}`);
+    }
   }
 
   toString(): string {
-    throw new Error(NOT_IMPLEMENTED);
+    return this.value.toFixed(2)
   }
 }
