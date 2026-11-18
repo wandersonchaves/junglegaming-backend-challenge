@@ -6,8 +6,6 @@ export interface MoneyProps {
   currency: string;
 }
 
-const NOT_IMPLEMENTED = 'not implemented';
-
 const AMOUNT_PATTERN = /^\d+(\.\d{1,2})?$/;
 
 export class Money {

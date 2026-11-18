@@ -1,3 +1,4 @@
+import { InvalidLedgerEntryError } from '../errors/domain.error';
 import { Money } from '../money/money';
 
 export enum LedgerDirection {
@@ -16,8 +17,6 @@ export interface LedgerEntryState {
   createdAt: Date;
 }
 
-const NOT_IMPLEMENTED = 'not implemented';
-
 export class WalletLedgerEntry {
   private constructor(
     public readonly id: string,
@@ -28,19 +27,39 @@ export class WalletLedgerEntry {
     public readonly balanceBefore: Money,
     public readonly balanceAfter: Money,
     public readonly createdAt: Date,
-  ) {}
+  ) { }
 
   /** Validates the arithmetic: balanceBefore -/+ money === balanceAfter. */
-  static create(_state: LedgerEntryState): WalletLedgerEntry {
-    throw new Error(NOT_IMPLEMENTED);
+  static create(state: LedgerEntryState): WalletLedgerEntry {
+    if (!state.money.isPositive()) {
+      throw new InvalidLedgerEntryError('amount must be greater than zero');
+    }
+    const entry = WalletLedgerEntry.rehydrate(state);
+    if (!entry.isBalanced()) {
+      throw new InvalidLedgerEntryError('balances do not match the amount and direction');
+    }
+    return entry;
   }
 
   /** Rebuilds an entry already persisted. Does not validate again. */
-  static rehydrate(_state: LedgerEntryState): WalletLedgerEntry {
-    throw new Error(NOT_IMPLEMENTED);
+  static rehydrate(state: LedgerEntryState): WalletLedgerEntry {
+    return new WalletLedgerEntry(
+      state.id,
+      state.walletId,
+      state.transactionId,
+      state.direction,
+      state.money,
+      state.balanceBefore,
+      state.balanceAfter,
+      state.createdAt,
+    );
   }
 
   isBalanced(): boolean {
-    throw new Error(NOT_IMPLEMENTED);
+    const expected =
+      this.direction === LedgerDirection.Debit
+        ? this.balanceBefore.subtract(this.money)
+        : this.balanceBefore.add(this.money);
+    return expected.equals(this.balanceAfter);
   }
 }
