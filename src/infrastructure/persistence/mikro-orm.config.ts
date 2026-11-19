@@ -5,6 +5,7 @@ import { Migration20261118000000_initial_schema } from './migrations/Migration20
 export default defineConfig({
   clientUrl: process.env.DATABASE_URL ?? 'postgres://wager:wager@localhost:5432/wager',
   entities: [],
+  pool: { min: 2, max: 20 },
   // Remove once the persistence entities exist.
   discovery: { warnWhenNoEntities: false },
   extensions: [Migrator],
