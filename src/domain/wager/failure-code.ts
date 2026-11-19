@@ -7,6 +7,7 @@ export const FailureCode = {
   ReversalWouldOverdraw: 'REVERSAL_WOULD_OVERDRAW',
   ReferenceNotFound: 'REFERENCE_NOT_FOUND',
   ReferenceMismatch: 'REFERENCE_MISMATCH',
+  ReferenceNotProcessed: 'REFERENCE_NOT_PROCESSED',
   ReferenceAlreadyReversed: 'REFERENCE_ALREADY_REVERSED',
   InvalidReferenceKind: 'INVALID_REFERENCE_KIND',
   AmountMismatch: 'AMOUNT_MISMATCH',
