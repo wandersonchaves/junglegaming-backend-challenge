@@ -1,3 +1,4 @@
+import { InboxMessage } from '../../domain/messaging/inbox-message';
 import { WagerTransaction } from '../../domain/wager/wager-transaction';
 import { WagerTransactionKind } from '../../domain/wager/wager-transaction-kind';
 import { Wallet } from '../../domain/wallet/wallet';
@@ -33,4 +34,30 @@ export interface LedgerRepository {
 
 export interface OutboxRepository {
   add(events: ReadonlyArray<IntegrationEvent<unknown>>): Promise<void>;
+}
+
+export interface InboxRepository {
+  /** Records the message. Returns false when this consumer already saw the same message id. */
+  tryReceive(message: InboxMessage): Promise<boolean>;
+  markProcessed(message: InboxMessage): Promise<void>;
+}
+
+export interface PendingReferenceItem {
+  transactionId: string;
+  walletId: string;
+  attempts: number;
+}
+
+export interface LockedPendingReference {
+  transaction: WagerTransaction;
+  attempts: number;
+}
+
+/** Reversals that arrived before the transaction they point at. */
+export interface PendingReferenceRepository {
+  /** Transactions in PENDING_REFERENCE whose next attempt is due, oldest first. No locks. */
+  findDue(limit: number, now: Date): Promise<PendingReferenceItem[]>;
+  /** Locks the row. Returns null when it is not pending anymore or another worker holds it. */
+  lock(transactionId: string): Promise<LockedPendingReference | null>;
+  recordAttempt(transactionId: string, attempts: number, nextAttemptAt: Date): Promise<void>;
 }

@@ -17,6 +17,10 @@ export class IdempotencyConflictError extends DomainError {
   readonly code = 'IDEMPOTENCY_CONFLICT';
 }
 
+export class InvalidCursorError extends DomainError {
+  readonly code = 'INVALID_CURSOR';
+}
+
 export class TransactionNotFoundError extends DomainError {
   readonly code = 'TRANSACTION_NOT_FOUND';
 }

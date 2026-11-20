@@ -1,6 +1,8 @@
 import {
+  InboxRepository,
   LedgerRepository,
   OutboxRepository,
+  PendingReferenceRepository,
   WagerTransactionRepository,
   WalletRepository,
 } from './repositories';
@@ -11,6 +13,8 @@ export interface TransactionContext {
   readonly transactions: WagerTransactionRepository;
   readonly ledger: LedgerRepository;
   readonly outbox: OutboxRepository;
+  readonly inbox: InboxRepository;
+  readonly pendingReferences: PendingReferenceRepository;
 }
 
 export interface UnitOfWork {

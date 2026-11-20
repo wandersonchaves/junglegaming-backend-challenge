@@ -1,17 +1,18 @@
-import { CurrencyMismatchError, InsufficientFundsError } from '../../domain/errors/domain.error';
+import { CurrencyMismatchError } from '../../domain/errors/domain.error';
+import { InboxMessage } from '../../domain/messaging/inbox-message';
 import { Money, MoneyProps } from '../../domain/money/money';
 import { FailureCode } from '../../domain/wager/failure-code';
 import { WagerTransaction } from '../../domain/wager/wager-transaction';
 import { WagerTransactionKind } from '../../domain/wager/wager-transaction-kind';
 import { WagerTransactionStatus } from '../../domain/wager/wager-transaction-status';
 import type { Wallet } from '../../domain/wallet/wallet';
-import { LedgerDirection, type WalletLedgerEntry } from '../../domain/wallet/wallet-ledger-entry';
-import { Clock, IdGenerator } from '../ports/clock-and-ids';
-import { UnitOfWork, type TransactionContext } from '../ports/unit-of-work';
 import { IdempotencyConflictError, UniqueViolationError, WalletNotFoundError, WalletPlayerMismatchError } from '../errors';
 import type { EventContext, IntegrationEvent } from '../events/integration-event';
 import { WagerTransactionPendingReference, WagerTransactionProcessed, WagerTransactionRejected, WalletBalanceChanged } from '../events/wager-events';
 import { hashPayload } from '../payload-hash';
+import { Clock, IdGenerator } from '../ports/clock-and-ids';
+import { UnitOfWork, type TransactionContext } from '../ports/unit-of-work';
+import { decideWagerTransaction } from '../wager-decision';
 
 export interface SubmitWagerTransactionCommand {
   idempotencyKey: string;
@@ -27,6 +28,13 @@ export interface SubmitWagerTransactionCommand {
   correlationId?: string;
 }
 
+/** Present when the request came from a queue message: the message is recorded in the same transaction. */
+export interface InboxEnvelope {
+  consumerName: string;
+  messageId: string;
+  payloadHash: string;
+}
+
 export interface SubmitWagerTransactionResult {
   transactionId: string;
   status: WagerTransactionStatus;
@@ -35,11 +43,6 @@ export interface SubmitWagerTransactionResult {
   idempotentReplay: boolean;
 }
 
-type Outcome =
-  | { type: 'applied'; entry?: WalletLedgerEntry; reference?: WagerTransaction }
-  | { type: 'rejected'; code: FailureCode }
-  | { type: 'pending' };
-
 export class SubmitWagerTransaction {
   constructor(
     private readonly uow: UnitOfWork,
@@ -47,18 +50,21 @@ export class SubmitWagerTransaction {
     private readonly ids: IdGenerator,
   ) { }
 
-  async execute(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
+  async execute(
+    command: SubmitWagerTransactionCommand,
+    inbox?: InboxEnvelope,
+  ): Promise<SubmitWagerTransactionResult> {
     const payloadHash = hashPayload(command);
     // Fails fast on invalid input (OPENING, zero amount, missing reference) before touching the database.
     this.buildTransaction(command, payloadHash);
 
     try {
-      return await this.attempt(command, payloadHash);
+      return await this.attempt(command, payloadHash, inbox);
     } catch (error) {
       // Two requests with the same key passed the check at once and one lost the unique constraint.
       // The winner is committed by now, so a second attempt finds it and answers as a replay.
       if (error instanceof UniqueViolationError) {
-        return this.attempt(command, payloadHash);
+        return this.attempt(command, payloadHash, inbox);
       }
       throw error;
     }
@@ -67,31 +73,58 @@ export class SubmitWagerTransaction {
   private attempt(
     command: SubmitWagerTransactionCommand,
     payloadHash: string,
+    inbox?: InboxEnvelope,
   ): Promise<SubmitWagerTransactionResult> {
     return this.uow.run(async (ctx) => {
-      // Replays answer without taking the wallet lock.
-      const known = await this.findExisting(ctx, command);
-      if (known) return this.replay(known, command, payloadHash);
+      const message = inbox
+        ? InboxMessage.receive({ ...inbox, receivedAt: this.clock.now() })
+        : undefined;
 
-      const wallet = await ctx.wallets.findByIdForUpdate(command.walletId);
-      if (!wallet) throw new WalletNotFoundError(`wallet ${command.walletId} does not exist`);
-
-      // Requests with the same key queue on the lock. Whoever got in first already committed,
-      // so look again now that the lock is ours.
-      const committed = await this.findExisting(ctx, command);
-      if (committed) return this.replay(committed, command, payloadHash);
-
-      if (wallet.playerId !== command.playerId) {
-        throw new WalletPlayerMismatchError('wallet does not belong to this player');
-      }
-      if (wallet.currency !== command.money.currency) {
-        throw new CurrencyMismatchError(
-          `wallet is in ${wallet.currency}, transaction is in ${command.money.currency}`,
-        );
+      // The inbox row is written in this very transaction, so a message that is in the inbox
+      // was also fully processed: redelivered copies are answered without doing the work again.
+      if (message && !(await ctx.inbox.tryReceive(message))) {
+        const known = await this.findExisting(ctx, command);
+        if (known) return this.replay(known, command, payloadHash);
+        throw new IdempotencyConflictError('this message id was already consumed for another transaction');
       }
 
-      return this.process(ctx, command, payloadHash, wallet);
+      const result = await this.handle(ctx, command, payloadHash);
+
+      if (message) {
+        message.markProcessed(this.clock.now());
+        await ctx.inbox.markProcessed(message);
+      }
+      return result;
     });
+  }
+
+  private async handle(
+    ctx: TransactionContext,
+    command: SubmitWagerTransactionCommand,
+    payloadHash: string,
+  ): Promise<SubmitWagerTransactionResult> {
+    // Replays answer without taking the wallet lock.
+    const known = await this.findExisting(ctx, command);
+    if (known) return this.replay(known, command, payloadHash);
+
+    const wallet = await ctx.wallets.findByIdForUpdate(command.walletId);
+    if (!wallet) throw new WalletNotFoundError(`wallet ${command.walletId} does not exist`);
+
+    // Requests with the same key queue on the lock. Whoever got in first already committed,
+    // so look again now that the lock is ours.
+    const committed = await this.findExisting(ctx, command);
+    if (committed) return this.replay(committed, command, payloadHash);
+
+    if (wallet.playerId !== command.playerId) {
+      throw new WalletPlayerMismatchError('wallet does not belong to this player');
+    }
+    if (wallet.currency !== command.money.currency) {
+      throw new CurrencyMismatchError(
+        `wallet is in ${wallet.currency}, transaction is in ${command.money.currency}`,
+      );
+    }
+
+    return this.process(ctx, command, payloadHash, wallet);
   }
 
   private async process(
@@ -104,7 +137,7 @@ export class SubmitWagerTransaction {
     const now = this.clock.now();
     const previousVersion = wallet.version;
 
-    const outcome = await this.decide(ctx, tx, wallet, now);
+    const outcome = await decideWagerTransaction(ctx, tx, wallet, this.ids, now);
 
     const events: IntegrationEvent<unknown>[] = [];
     const eventContext = (): EventContext => ({
@@ -141,68 +174,6 @@ export class SubmitWagerTransaction {
     await ctx.outbox.add(events);
 
     return this.toResult(tx, false);
-  }
-
-  /** Applies the business rules and mutates the wallet only when the movement is allowed. */
-  private async decide(
-    ctx: TransactionContext,
-    tx: WagerTransaction,
-    wallet: Wallet,
-    now: Date,
-  ): Promise<Outcome> {
-    let reference: WagerTransaction | undefined;
-
-    if (tx.requiresReference()) {
-      reference =
-        (await ctx.transactions.findByProviderExternalId(
-          tx.providerId,
-          tx.referenceExternalTransactionId as string,
-        )) ?? undefined;
-
-      // The reference may still be on its way: wait for it instead of rejecting.
-      if (
-        !reference ||
-        reference.status === WagerTransactionStatus.Pending ||
-        reference.status === WagerTransactionStatus.PendingReference
-      ) {
-        return { type: 'pending' };
-      }
-      if (reference.status !== WagerTransactionStatus.Processed) {
-        return { type: 'rejected', code: FailureCode.ReferenceNotProcessed };
-      }
-
-      const mismatch = tx.checkReference(reference);
-      if (mismatch) return { type: 'rejected', code: mismatch };
-
-      if (await ctx.transactions.hasProcessedReversal(reference.id, tx.kind)) {
-        return { type: 'rejected', code: FailureCode.ReferenceAlreadyReversed };
-      }
-    }
-
-    if (!tx.affectsBalance()) return { type: 'applied', reference };
-
-    const movement = {
-      entryId: this.ids.next(),
-      transactionId: tx.id,
-      money: tx.money,
-      at: now,
-    };
-    try {
-      const entry =
-        tx.ledgerDirectionFor(reference) === LedgerDirection.Debit
-          ? wallet.debit(movement)
-          : wallet.credit(movement);
-      return { type: 'applied', entry, reference };
-    } catch (error) {
-      if (error instanceof InsufficientFundsError) {
-        // A reversal that would overdraw is a different situation from a bet without funds.
-        const code = tx.requiresReference()
-          ? FailureCode.ReversalWouldOverdraw
-          : FailureCode.InsufficientFunds;
-        return { type: 'rejected', code };
-      }
-      throw error;
-    }
   }
 
   private async findExisting(
