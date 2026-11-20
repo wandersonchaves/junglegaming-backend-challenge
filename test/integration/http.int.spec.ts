@@ -10,6 +10,9 @@ let base: string;
 const run = randomUUID().slice(0, 8);
 
 beforeAll(async () => {
+  // This suite exercises HTTP only: the queue consumer and the workers have their own suites.
+  process.env.CONSUMER_ENABLED = 'false';
+  process.env.WORKERS_ENABLED = 'false';
   app = await NestFactory.create(AppModule, { logger: false });
   await app.listen(0);
   base = await app.getUrl();
@@ -145,6 +148,88 @@ describe('HTTP contract', () => {
     });
 
     expect(response.status).toBe(202);
+  });
+});
+
+describe('queries, reconciliation and operations', () => {
+  const get = (path: string) => fetch(`${base}${path}`);
+
+  test('GET /wallets/:id returns balance and version, 404 when unknown', async () => {
+    const w = await wallet('100.00');
+    await submit(w, 'q-bet', '25.00');
+
+    const found = await get(`/wallets/${w.walletId}`);
+    const missing = await get(`/wallets/${randomUUID()}`);
+
+    expect(found.status).toBe(200);
+    expect(await found.json()).toMatchObject({ balance: { amount: '75.00', currency: 'BRL' }, version: 2 });
+    expect(missing.status).toBe(404);
+  });
+
+  test('GET ledger pages with an opaque cursor', async () => {
+    const w = await wallet('100.00');
+    for (let i = 0; i < 4; i += 1) await submit(w, `ledger-${i}`, '1.00');
+
+    const first = (await (await get(`/wallets/${w.walletId}/ledger?limit=2`)).json()) as {
+      items: { id: string }[];
+      nextCursor: string | null;
+    };
+    const second = (await (
+      await get(`/wallets/${w.walletId}/ledger?limit=2&cursor=${first.nextCursor}`)
+    ).json()) as { items: { id: string }[] };
+
+    expect(first.items).toHaveLength(2);
+    expect(first.nextCursor).not.toBeNull();
+    expect(second.items).toHaveLength(2);
+    expect(new Set([...first.items, ...second.items].map((i) => i.id)).size).toBe(4);
+  });
+
+  test('a broken cursor or limit is a 400', async () => {
+    const w = await wallet();
+
+    expect((await get(`/wallets/${w.walletId}/ledger?cursor=not-a-cursor`)).status).toBe(400);
+    expect((await get(`/wallets/${w.walletId}/ledger?limit=0`)).status).toBe(400);
+  });
+
+  test('GET a transaction by id and by provider and external id', async () => {
+    const w = await wallet();
+    const created = (await (await submit(w, 'lookup-http', '5.00')).json()) as { transactionId: string };
+
+    const byId = await get(`/wagering/transactions/${created.transactionId}`);
+    const byExternal = await get(`/providers/provider-a/wagering/transactions/${run}-lookup-http`);
+    const missing = await get(`/wagering/transactions/${randomUUID()}`);
+
+    expect(byId.status).toBe(200);
+    expect(((await byExternal.json()) as { id: string }).id).toBe(created.transactionId);
+    expect(missing.status).toBe(404);
+  });
+
+  test('POST reconciliation reports the wallet as consistent', async () => {
+    const w = await wallet('100.00');
+    await submit(w, 'recon-http', '10.00');
+
+    const response = await post(`/wallets/${w.walletId}/reconciliation`, {});
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ consistent: true, checkedEntries: 2 });
+  });
+
+  test('health: live is ok and ready checks the dependencies', async () => {
+    expect((await get('/health/live')).status).toBe(200);
+    const ready = await get('/health/ready');
+    expect(ready.status).toBe(200);
+    expect(await ready.json()).toMatchObject({ status: 'ready', checks: { postgres: 'up' } });
+  });
+
+  test('metrics are exposed in the Prometheus text format', async () => {
+    const w = await wallet();
+    await submit(w, 'metrics-bet', '1.00');
+
+    const text = await (await get('/metrics')).text();
+
+    expect(text).toContain('# TYPE wager_transactions_total counter');
+    expect(text).toContain('wager_transactions_total{source="http",status="PROCESSED"}');
+    expect(text).toContain('wallet_lock_wait_seconds_bucket');
   });
 });
 

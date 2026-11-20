@@ -9,6 +9,8 @@ import {
 import { WagerTransactionKind } from '../../src/domain/wager/wager-transaction-kind';
 import config from '../../src/infrastructure/persistence/mikro-orm.config';
 import { MikroOrmUnitOfWork } from '../../src/infrastructure/persistence/mikro-orm-unit-of-work';
+import { PgOutboxBatchStore } from '../../src/infrastructure/persistence/pg-outbox-batch-store';
+import { PgReadModel } from '../../src/infrastructure/persistence/pg-read-model';
 import { RandomUuidGenerator, SystemClock } from '../../src/infrastructure/system/system-clock';
 
 /** Real PostgreSQL, started by `docker compose up -d` and migrated by `bun run migrate:up`. */
@@ -79,5 +81,11 @@ export async function connect() {
 
   const externalId = (name: string) => `${run}-${name}`;
 
-  return { orm, em, uow, createWallet, submit, openWallet, bet, externalId, balances, count };
+  const outboxStore = new PgOutboxBatchStore(orm);
+  const readModel = new PgReadModel(orm);
+
+  return {
+    orm, em, uow, clock, ids, createWallet, submit, openWallet, bet, externalId, balances, count,
+    outboxStore, readModel,
+  };
 }
