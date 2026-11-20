@@ -35,6 +35,7 @@ To run several instances, start the app again with another port: `PORT=3001 bun 
 | `bun test` | runs every test (needs `docker compose up -d` and `bun run migrate:up`) |
 | `bun run test:unit` | domain and application tests only, no database or queue |
 | `bun run test:integration` | tests against real PostgreSQL and SQS, including three app processes |
+| `bun run test:load` | load test against running instances; see `TARGETS`, `DURATION_S` and `CONCURRENCY` in `scripts/load-test.ts` |
 | `bun run typecheck` | type checks the project |
 | `bun run migrate:up` | applies the migrations |
 | `bun run migrate:down` | reverts the last migration |
