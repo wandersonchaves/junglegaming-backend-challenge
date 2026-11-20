@@ -183,7 +183,32 @@ Not implemented. It is outside what the challenge scores, and the README allows 
 
 Unit tests (domain and use cases, in-memory doubles) and integration tests (real PostgreSQL and the SQS API) as listed in the README. Concurrency tests use real parallelism: a pool of connections hitting the same wallet at once, and three separate `bun` processes that share the database and the queues. A deliberately broken variant (removing `FOR UPDATE`) makes the race tests fail, which is how I checked that they would catch the bug. Every concurrency test ends by comparing the stored balance with the ledger.
 
-## 15. Known limitations and trade-offs
+## 15. Load test
+
+Run with `bun run test:load` against three running instances: `TARGETS=http://localhost:3000,http://localhost:3001,http://localhost:3002 DURATION_S=30 bun run test:load`.
+
+**Environment:** darwin 27.0.0, 8 cores (Apple M3), 16 GiB RAM, Bun 1.4.4. PostgreSQL 16 and LocalStack in Docker on the same machine as the load generator. 3 API instances, each with the SQS consumer and the workers on.
+
+**Method:** closed loop, 64 concurrent workers for 30 s, 20 wallets, 40% of the traffic on one hot wallet. Mix: about 80% new BET, 10% WIN, 10% idempotent replay of an earlier BET (a replay with nothing to repeat yet becomes a new BET). Every request has its own `Idempotency-Key`. The generator and the system under test share the machine, so the numbers are a lower bound on what the service can do.
+
+| Result | Value |
+| --- | --- |
+| Requests answered | 19001 |
+| Throughput | 630 req/s |
+| Latency p50 / p95 / p99 | 32.9 / 481.4 / 880.9 ms |
+| Latency max | 2203.1 ms |
+| Status codes | 200: 1858, 201: 17143 |
+| Error rate (5xx + network) | 0.00% (0 server errors, 0 network errors) |
+| Wallet lock conflicts (waits over 5 ms) | 7319 |
+| Unique violations caught and retried | 0 |
+| Component retries (consumer, publisher, pending refs) | 2 |
+| Outbox lag when the load stopped | 15.3 s |
+| Outbox drained | yes, in 15.4 s after the load |
+| Wallets reconciled clean | 20 of 20 |
+
+**Analysis.** Throughput was 630 req/s with no 5xx and no network error, and all 20 wallets reconciled clean. The p50 is low (33 ms) and the tail is high (p95 481 ms, p99 881 ms) because 40% of the traffic goes to one hot wallet and the per-wallet lock serialises it: 7,319 lock waits above 5 ms. Cold wallets run in parallel. No unique violation reached the database, so the second lookup after the lock caught every replay. The outbox lagged up to about 15 s at the peak and drained 15 s after the load stopped. The publisher sends one `SendMessage` per event, so the next steps would be `SendMessageBatch` and a lease column to avoid holding row locks while talking to SQS. This is one run, with the load generator and the service on the same machine, so these numbers are a floor and not a capacity claim.
+
+## 16. Known limitations and trade-offs
 
 - **Rejections that cannot be stored.** A currency or player that does not match the wallet is answered `422` but not recorded, because the composite foreign key makes that transaction impossible to insert. Recording it would need the currency check to move from a foreign key to a trigger, or a separate rejections table.
 - **A rejected or pending replay has no balance in the answer.** Only `PROCESSED` stores `balance_after`.
@@ -192,5 +217,5 @@ Unit tests (domain and use cases, in-memory doubles) and integration tests (real
 - **FIFO queue throughput** is limited per message group; the group is the wallet, which matches the concurrency unit.
 - **The retry window for pending references** (about 25 minutes, 10 attempts) is a chosen constant, not configuration.
 - **One currency per test**, though the model supports several.
-- **No load test** (`test:load`). The concurrency tests show correctness under contention, not throughput numbers.
+- **Load test is one run on one machine.** Section 15 reports a closed-loop run (3 instances, 64 workers, 30 s) with the load generator, PostgreSQL and LocalStack on the same laptop. It shows the shape of the behaviour under contention, not a capacity number, and it was not repeated or run for long.
 - **Metrics are per process.** A scraper must read every instance.
