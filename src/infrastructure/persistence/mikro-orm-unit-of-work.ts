@@ -1,8 +1,10 @@
 import { MikroORM, SqlEntityManager } from '@mikro-orm/postgresql';
 import { TransactionContext, UnitOfWork } from '../../application/ports/unit-of-work';
 import { mapDatabaseError } from './database-errors';
+import { PgInboxRepository } from './repositories/inbox.repository';
 import { PgLedgerRepository } from './repositories/ledger.repository';
 import { PgOutboxRepository } from './repositories/outbox.repository';
+import { PgPendingReferenceRepository } from './repositories/pending-reference.repository';
 import { PgWagerTransactionRepository } from './repositories/wager-transaction.repository';
 import { PgWalletRepository } from './repositories/wallet.repository';
 
@@ -22,6 +24,8 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           transactions: new PgWagerTransactionRepository(sql),
           ledger: new PgLedgerRepository(sql),
           outbox: new PgOutboxRepository(sql),
+          inbox: new PgInboxRepository(sql),
+          pendingReferences: new PgPendingReferenceRepository(sql),
         });
       });
     } catch (error) {

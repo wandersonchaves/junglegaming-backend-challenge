@@ -4,7 +4,9 @@ import { FailureCode } from '../../../domain/wager/failure-code';
 import { WagerTransaction } from '../../../domain/wager/wager-transaction';
 import { WagerTransactionKind } from '../../../domain/wager/wager-transaction-kind';
 import { WagerTransactionStatus } from '../../../domain/wager/wager-transaction-status';
+import { asDate, asOptionalDate } from '../row-mapping';
 import { WagerTransactionRepository } from '../../../application/ports/repositories';
+import { FIRST_REFERENCE_RETRY_MS } from '../../../application/reprocess-pending-references/reprocess-pending-references.use-case';
 
 interface TransactionRow {
   id: string;
@@ -24,8 +26,8 @@ interface TransactionRow {
   reference_transaction_id: string | null;
   failure_code: FailureCode | null;
   balance_after: string | null;
-  created_at: Date;
-  processed_at: Date | null;
+  created_at: Date | string;
+  processed_at: Date | string | null;
 }
 
 export function toTransaction(row: TransactionRow): WagerTransaction {
@@ -42,11 +44,11 @@ export function toTransaction(row: TransactionRow): WagerTransaction {
     kind: row.kind,
     money: Money.from({ amount: row.amount, currency: row.currency }),
     referenceExternalTransactionId: row.reference_external_transaction_id ?? undefined,
-    createdAt: row.created_at,
+    createdAt: asDate(row.created_at),
     status: row.status,
     referenceTransactionId: row.reference_transaction_id ?? undefined,
     failureCode: row.failure_code ?? undefined,
-    processedAt: row.processed_at ?? undefined,
+    processedAt: asOptionalDate(row.processed_at),
     balanceAfter: row.balance_after
       ? Money.from({ amount: row.balance_after, currency: row.currency })
       : undefined,
@@ -80,8 +82,8 @@ export class PgWagerTransactionRepository implements WagerTransactionRepository 
          (id, provider_id, external_transaction_id, idempotency_key, payload_hash, wallet_id,
           player_id, round_id, game_id, kind, amount, currency, status,
           reference_external_transaction_id, reference_transaction_id, failure_code,
-          balance_after, created_at, processed_at)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          balance_after, created_at, processed_at, reference_next_attempt_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         tx.id,
         tx.providerId,
@@ -102,6 +104,9 @@ export class PgWagerTransactionRepository implements WagerTransactionRepository 
         tx.balanceAfter?.toString() ?? null,
         tx.createdAt,
         tx.processedAt ?? null,
+        tx.status === WagerTransactionStatus.PendingReference
+          ? new Date(tx.createdAt.getTime() + FIRST_REFERENCE_RETRY_MS)
+          : null,
       ],
       'run',
     );

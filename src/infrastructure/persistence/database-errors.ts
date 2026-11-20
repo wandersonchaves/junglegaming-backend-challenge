@@ -1,4 +1,5 @@
 import { TransientInfrastructureError, UniqueViolationError } from '../../application/errors';
+import { metrics } from '../observability/metrics';
 
 const UNIQUE_VIOLATION = '23505';
 // 40001 serialization_failure, 40P01 deadlock_detected, 57P01 admin_shutdown, 08xxx connection exceptions
@@ -17,6 +18,7 @@ export function mapDatabaseError(error: unknown): unknown {
   if (!driver) return error;
 
   if (driver.code === UNIQUE_VIOLATION) {
+    metrics.uniqueViolations.inc({ constraint: driver.constraint ?? 'unknown' });
     return new UniqueViolationError(driver.constraint);
   }
   if (

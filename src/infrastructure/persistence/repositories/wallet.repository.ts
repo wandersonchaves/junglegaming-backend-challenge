@@ -3,6 +3,8 @@ import { Money } from '../../../domain/money/money';
 import { Wallet } from '../../../domain/wallet/wallet';
 import { ConcurrentModificationError } from '../../../application/errors';
 import { WalletRepository } from '../../../application/ports/repositories';
+import { asDate } from '../row-mapping';
+import { LOCK_CONFLICT_THRESHOLD_SECONDS, metrics } from '../../observability/metrics';
 
 interface WalletRow {
   id: string;
@@ -10,8 +12,8 @@ interface WalletRow {
   currency: string;
   balance: string;
   version: number;
-  created_at: Date;
-  updated_at: Date;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 export function toWallet(row: WalletRow): Wallet {
@@ -21,8 +23,8 @@ export function toWallet(row: WalletRow): Wallet {
     currency: row.currency,
     balance: Money.from({ amount: row.balance, currency: row.currency }),
     version: row.version,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: asDate(row.created_at),
+    updatedAt: asDate(row.updated_at),
   });
 }
 
@@ -36,10 +38,14 @@ export class PgWalletRepository implements WalletRepository {
 
   /** Row lock per wallet: other transactions on the same wallet wait here, other wallets do not. */
   async findByIdForUpdate(id: string): Promise<Wallet | null> {
+    const startedAt = performance.now();
     const rows = await this.em.execute<WalletRow[]>(
       'select * from wallets where id = ? for update',
       [id],
     );
+    const waited = (performance.now() - startedAt) / 1000;
+    metrics.lockWaitSeconds.observe(waited);
+    if (waited > LOCK_CONFLICT_THRESHOLD_SECONDS) metrics.lockConflicts.inc();
     return rows[0] ? toWallet(rows[0]) : null;
   }
 
