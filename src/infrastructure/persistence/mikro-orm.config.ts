@@ -4,7 +4,7 @@ import { Migration20261118000000_initial_schema } from './migrations/Migration20
 import { Migration20261119000000_pending_reference_retry } from './migrations/Migration20261119000000_pending_reference_retry';
 
 export default defineConfig({
-  clientUrl: process.env.DATABASE_URL ?? 'postgres://wager:wager@localhost:5432/wager',
+  clientUrl: process.env.DATABASE_URL ?? 'postgres://wager:wager@localhost:5433/wager',
   entities: [],
   pool: { min: 2, max: 20 },
   // Remove once the persistence entities exist.
