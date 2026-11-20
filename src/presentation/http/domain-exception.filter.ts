@@ -4,6 +4,7 @@ import { CurrencyMismatchError, DomainError, InvalidMoneyError } from '../../dom
 import { InvalidTransactionError } from '../../domain/wager/wager.errors';
 import {
   IdempotencyConflictError,
+  InvalidCursorError,
   TransactionNotFoundError,
   TransientInfrastructureError,
   WalletAlreadyExistsError,
@@ -22,7 +23,8 @@ export function statusFor(error: unknown): number {
   if (
     error instanceof InvalidRequestError ||
     error instanceof InvalidMoneyError ||
-    error instanceof InvalidTransactionError
+    error instanceof InvalidTransactionError ||
+    error instanceof InvalidCursorError
   ) {
     return 400;
   }
